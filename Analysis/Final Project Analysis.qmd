@@ -1,0 +1,281 @@
+---
+title: "Final Project Analysis"
+subtitle: "DATA 627 - Statistical Machine Learning, Fall 2025"
+author: "Ana Paula Miranda"
+date: today
+number-sections: true
+format:
+  html:
+    embed-resources: true
+    toc: true
+    theme: pulse
+    df_print: kable
+execute: 
+  warning: false
+---
+
+<style>
+.my-textbox {
+  background-color: #f5ebeb;
+  border: 1px solid #ccc;
+  padding: 15px;
+  border-radius: 5px;
+  margin-bottom: 20px;
+}
+</style>
+<br>
+
+<br>
+<div class="my-textbox">
+</div> 
+
+
+```{r}
+#| message: false
+#| echo: fenced
+#| include: true
+library(tidyverse)
+library(forcats)
+library(lubridate)
+```
+
+
+
+```{r}
+df = read_csv(".//apprentices_2018_2019.csv", col_types = cols())
+app = df
+
+glimpse(app)
+```
+
+
+```{r}
+app_c = app %>% 
+  select(APPR_ID, 
+         MAJOR_GROUP_NAME, 
+         ONET_SOC_CD, 
+         NAICS_CD, 
+         APPR_STATUS_CD, 
+         START_DT, 
+         STARTING_WAGE, 
+         EXIT_WAGE_DT, 
+         EXIT_WAGE, 
+         EXPECT_COMPLETE_DT,
+         COMPLETION_EXT_DT, 
+         AGE_AT_START, 
+         SEX_CD, 
+         ETHNICITY_CD, 
+         EDUCATION_CD, 
+         RACE_CD, 
+         ASIAN_IND, 
+         AFRICAAMER_IND, 
+         NATHAWAI_IND, 
+         NATINDIAN_IND, 
+         W_IND, 
+         OCCUP_TYPE
+         ) %>% 
+  mutate(
+    
+  STARTING_WAGE = ifelse(STARTING_WAGE < 5.00, NA, STARTING_WAGE),
+  STARTING_WAGE = ifelse(STARTING_WAGE > 80, NA, STARTING_WAGE),
+
+  EXIT_WAGE = ifelse(EXIT_WAGE < 5.00, NA, EXIT_WAGE),
+  EXIT_WAGE = ifelse(EXIT_WAGE > 80, NA, EXIT_WAGE),
+
+
+      
+  COMPLETION_EXT_DT = ifelse(COMPLETION_EXT_DT < START_DT, NA, COMPLETION_EXT_DT),
+  COMPLETION_EXT_DT = ifelse(COMPLETION_EXT_DT > as.Date("2025-06-30"), NA, COMPLETION_EXT_DT),
+  COMPLETION_EXT_DT = as.Date(COMPLETION_EXT_DT),
+
+# The Office of Apprenticeship defines successful completion as an apprentice completing their apprenticeship within 1 year of the expected completion date. Treating completion in this way allows OA to define a status for the apprentices who left their apprenticeship but did not have their status updated by their sponsor.   
+    
+  COMPLETION_DEADLINE = case_when(
+    EXPECT_COMPLETE_DT < START_DT ~ as.Date(NA),
+    TRUE ~ as.Date(EXPECT_COMPLETE_DT + years(1))
+),
+
+# From Data Dictionary Addendum. APPRENTICE_STATUS_CODE: Status of the Apprentice, this determines if an apprentice, is Active, Cancelled, New or Completed. CA = Cancelled, CO = Completed, RE = Registered, RI = Reinstated, SU = Suspended, TR = Transferred, RS = Restore Pending, UP = Update Pending/Registered, IC = Interim Completion Pending, RS=Restore Pending. 
+# Given data quality issues, we must be careful. We will treat an apprentice with CO as completed, and an apprentice with CA as cancelled. However, it is possible that a sponsor has not updated this field. Therefore we will also make a determination based on the value of completion date, since the presence of a completion date should be definitive as a completion event. 
+  
+  COMPLETION = case_when(
+    APPR_STATUS_CD == "CO" ~ "Y",
+    APPR_STATUS_CD == "CA" ~ "N",
+    is.na(COMPLETION_DEADLINE) ~ NA,
+    COMPLETION_DEADLINE > as.Date("2025-06-30") ~ NA, 
+    is.na(COMPLETION_EXT_DT) ~ "N",
+    COMPLETION_EXT_DT > COMPLETION_DEADLINE ~ "N",
+    COMPLETION_EXT_DT <= COMPLETION_DEADLINE ~ "Y"
+  ),
+  COMPLETION = as.factor(COMPLETION),
+  
+  MAJOR_GROUP_NAME = as.factor(MAJOR_GROUP_NAME),
+  APPR_STATUS_CD = as.factor(APPR_STATUS_CD), 
+  SEX_CD = as.factor(SEX_CD),
+  ETHNICITY_CD = as.factor(ETHNICITY_CD),
+  EDUCATION_CD = as.factor(EDUCATION_CD),
+  RACE_CD = as.factor(RACE_CD),
+  ASIAN_IND = as.factor(ASIAN_IND),
+  AFRICAAMER_IND = as.factor(AFRICAAMER_IND),
+  NATHAWAI_IND = as.factor(NATHAWAI_IND),
+  NATINDIAN_IND = as.factor(NATINDIAN_IND),
+  W_IND = as.factor(W_IND),
+  OCCUP_TYPE = as.factor(OCCUP_TYPE),
+  
+  AGE_AT_START = ifelse((AGE_AT_START < 14 | AGE_AT_START > 70), NA, AGE_AT_START)
+  
+  ) %>% 
+
+  relocate(COMPLETION_DEADLINE, .after = COMPLETION_EXT_DT)  %>% 
+  relocate(COMPLETION, .after = COMPLETION_DEADLINE)
+
+  
+glimpse(app_c)
+
+# investigating race allocation
+summary(app_c$COMPLETION_EXT_DT)
+table(app_c$COMPLETION)
+table(app_c$RACE_CD, app_c$W_IND)
+table(app_c$RACE_CD, app_c$AFRICAAMER_IND)
+
+
+app_c = app_c %>% 
+  mutate(
+    RACE_CD = fct_recode(RACE_CD,
+                          "White" = "1",
+                          "Pacific Islander" = "2",
+                          "Black" = "3",
+                          "Asian" = "4",
+                          "Native American" = "5",
+                          "Not Provided" = "6",
+                          "Multi-Race" = "7"
+    ),
+    EDUCATION_CD = fct_recode(EDUCATION_CD,
+                              "Not High School graduate"  = "1",
+                              "9th to 12th grade, no diploma"  = "2",
+                              "GED"  = "3",
+                              "High School graduate (including equivalency)"  = "4",
+                              "Participant Did Not Self-Identify"  = "5",
+                              "Some College or Associate's degree"  = "6",
+                              "Bachelor's degree"  = "7",
+                              "Masters degree"  = "8",
+                              "Doctorate or Prof. degree"  = "9"
+    ),
+    ETHNICITY_CD = fct_recode(ETHNICITY_CD,
+                              "Hispanic or Latino"  = "1",
+                              "Non-Hispanic or Latino"  = "2",
+                              "Did Not Self-Identify"  = "9"
+    ),
+    SEX_CD = fct_recode(SEX_CD,
+                              "Male"  = "1",
+                              "Female"  = "2",
+                              "Did Not Self-Identify"  = "9"
+    )
+  )  
+
+glimpse(app_c)
+```
+
+### Creating a Feature Set
+
+```{r}
+app_f = app_c %>% 
+  select(- APPR_ID,
+         - ONET_SOC_CD,
+         - NAICS_CD,
+         - APPR_STATUS_CD,
+         - START_DT,
+         - EXIT_WAGE_DT,
+         - EXPECT_COMPLETE_DT,
+         - COMPLETION_EXT_DT,
+         - COMPLETION_DEADLINE,
+         - ASIAN_IND,
+         - AFRICAAMER_IND,
+         - NATHAWAI_IND,
+         - W_IND)
+```
+
+
+
+# Analysis
+
+## Regression
+
+```{r}
+mlr_wage <- lm(EXIT_WAGE ~ STARTING_WAGE + COMPLETION + AGE_AT_START + SEX_CD +
+               ETHNICITY_CD + RACE_CD + EDUCATION_CD + OCCUP_TYPE + MAJOR_GROUP_NAME, 
+               app_c)
+summary(mlr_wage)
+```
+
+
+## Classification
+
+### Tree-Based Methods
+
+#### Establish Initial Model
+
+```{r}
+library(tree)
+app_tree_f = tree(COMPLETION ~ ., data = app_f)
+app_tree_f
+summary(app_tree_f)
+```
+
+#### Tree Initial Model
+
+```{r}
+plot(app_tree_f)
+text(app_tree_f)
+```
+
+#### Tree Exploration
+
+```{r}
+app_tree_f_sub1 = tree(COMPLETION ~ EXIT_WAGE + STARTING_WAGE, data = app_f)
+plot(app_f$EXIT_WAGE, app_f$STARTING_WAGE, col = app_f$COMPLETION) 
+partition.tree(app_tree_f_sub1, add = TRUE, col = "blue", lwd = 10)
+```
+
+```{r}
+plot(app_f$EXIT_WAGE, app_f$STARTING_WAGE,
+     col = c("red", "green")[as.numeric(app_f$COMPLETION)],
+     pch = 19,
+     xlab = "Exit Wage",
+     ylab = "Starting Wage",
+     main = "Tree Partition: Apprentice Completion")
+partition.tree(app_tree_f_sub1, add = TRUE, col = "blue", lwd = 2)
+```
+
+#### Tree Tuning
+
+```{r}
+set.seed(1234)
+app_tree_big = tree(COMPLETION ~ ., data = app_f, mindev = 0.01, minsize = 10)
+app_tree_cv = cv.tree(app_tree_big)
+app_tree_cv
+min_dev = min(app_tree_cv$dev)
+dev_1se = min_dev + sd(app_tree_cv$dev)
+good_sizes = app_tree_cv$size[app_tree_cv$dev <= dev_1se]
+best_simpler_size = min(good_sizes)
+app_tree_pruned = prune.tree(app_tree_big, best = best_simpler_size)
+app_tree_pruned
+```
+:::{.callout-note}
+## Cross Validation Results
+The cross validation for the tree-based approach demonstrates that the tree has the best performance at 8 nodes. We will use these results.
+:::
+
+#### Tree Analysis
+
+:::{.callout-important}
+## Tree Findings
+- Overall, 43.5% of apprentices completed their apprenticeship.  
+- The pruned tree reveals that exit wage is the dominant predictor of apprenticeship completion.  
+- Apprentices earning above \$27.69/hr are much more likely to complete (80.1%).  
+- Apprentices earning below \$27.69/hr at exit show sharply lower completion rates (around 25.3%, depending on occupation).  
+- Within low-wage groups, occupation type further differentiates outcomes. Low wage blue-collar and service roles exhibit the lowest completion probabilities (8.7%). 
+- Low wage office-related occupations, by contrast, have a 45.7% completion rate, higher than the overall completion rate. 
+- This suggests that both wage attainment and occupational sector play significant roles in predicting successful completion.
+:::
+
