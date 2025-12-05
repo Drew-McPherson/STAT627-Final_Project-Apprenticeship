@@ -1,0 +1,104 @@
+---
+title: "Final Project EDA"
+author: "Drew McPherson"
+date: "2025-10-26"
+output: html_document
+---
+
+# Libraries
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyverse)
+library(class)
+library(readr)
+```
+
+# Ingest Data
+
+```{r}
+df <- read_csv(".//apprentices.csv", col_types = cols())
+```
+# Filtering
+
+```{r}
+app = df %>% 
+  filter(START_DT >= "2018-01-01" &
+         START_DT < "2020-01-01")
+```
+
+```{r}
+write_csv(app, "apprentices_2018_2019.csv")
+```
+
+
+# Data Transformation
+
+## Leverage
+
+```{r}
+
+```
+
+## Influence
+
+```{r}
+
+```
+
+## Exploratory Data Analysis (EDA)
+
+```{r}
+df %>% 
+  filter(EXIT_WAGE == 0) %>% 
+  count()
+
+# 
+
+df %>% 
+  filter(!is.na(EXIT_WAGE), EXIT_WAGE > 5) %>%
+  ggplot(aes(x = EXIT_WAGE)) +
+  geom_boxplot(outlier.color = "red")
+
+df %>% 
+  filter(EXIT_WAGE > 80) %>% 
+  count() 
+
+# 63 records have EXIT_WAGE above 100
+
+df %>% 
+  filter(EXIT_WAGE > 80) %>% 
+  summarise(mean_wage = mean(EXIT_WAGE, na.rm = TRUE))
+
+# The mean wage for the outlier records is 33,592.09. These are likely annual or monthly salaries and will skew the results. We will remove them. 
+
+df %>% 
+  filter(!is.na(EXIT_WAGE), EXIT_WAGE > 5) %>%
+  ggplot(aes(x = EXIT_WAGE)) +
+  geom_boxplot(outlier.color = "red")
+  
+#    geom_histogram(binwidth = 2)
+
+#plot(app$EXIT_WAGE)
+```
+```{r}
+app %>% 
+  filter(EXIT_WAGE > 0) %>% 
+  summarise(n = n())
+```
+
+
+## 
+
+```{r}
+# EDA confirmed the presence of outliers in Exit Wage data
+
+app_c = app %>% 
+  mutate(
+    EXIT_WAGE = ifelse(EXIT_WAGE < 5, NA, EXIT_WAGE)
+    EXIT_WAGE = ifelse(EXIT_WAGE > 150, NA, EXIT_WAGE)
+    )
+
+
+```
+
