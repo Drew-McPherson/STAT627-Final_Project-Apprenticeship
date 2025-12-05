@@ -1,0 +1,1361 @@
+---
+title: "Final Project Analysis"
+subtitle: "DATA 627 - Statistical Machine Learning, Fall 2025"
+author: "Ana Paula Miranda"
+date: today
+number-sections: true
+format:
+  html:
+    embed-resources: true
+    toc: true
+    theme: pulse
+    df_print: kable
+execute: 
+  warning: false
+---
+
+<style>
+.my-textbox {
+  background-color: #f5ebeb;
+  border: 1px solid #ccc;
+  padding: 15px;
+  border-radius: 5px;
+  margin-bottom: 20px;
+}
+</style>
+<br>
+
+<br>
+<div class="my-textbox">
+</div> 
+
+# Data Preparation
+
+## Libraries
+
+```{r libraries}
+#| message: false
+#| echo: fenced
+#| include: true
+library(tidyverse)
+library(forcats)
+library(lubridate)
+library(randomForestSRC)
+library(caret)
+library(class)
+library(boot)
+library(ggplot2)
+library(tree)
+library(glmnet)
+options(scipen = 999)
+```
+
+## Set Seed
+
+```{r}
+my_seed = 1234
+```
+
+
+## Load Data
+
+```{r load}
+df = read_csv(".//apprentices_2018_2019.csv", col_types = cols())
+app = df
+
+glimpse(app)
+```
+
+## Transform Data
+
+```{r transformations}
+app = app %>% 
+  select(APPR_ID, 
+         MAJOR_GROUP_NAME, 
+         ONET_SOC_CD, 
+         NAICS_CD, 
+         APPR_STATUS_CD, 
+         START_DT, 
+         STARTING_WAGE, 
+         EXIT_WAGE_DT, 
+         EXIT_WAGE, 
+         EXPECT_COMPLETE_DT,
+         COMPLETION_EXT_DT, 
+         AGE_AT_START, 
+         SEX_CD, 
+         ETHNICITY_CD, 
+         EDUCATION_CD, 
+         RACE_CD, 
+         ASIAN_IND, 
+         AFRICAAMER_IND, 
+         NATHAWAI_IND, 
+         NATINDIAN_IND, 
+         W_IND
+         ) %>% 
+  mutate(
+    
+  STARTING_WAGE = ifelse(STARTING_WAGE < 5.00, NA, STARTING_WAGE),
+  STARTING_WAGE = ifelse(STARTING_WAGE > 80, NA, STARTING_WAGE),
+
+  EXIT_WAGE = ifelse(EXIT_WAGE < 5.00, NA, EXIT_WAGE),
+  EXIT_WAGE = ifelse(EXIT_WAGE > 80, NA, EXIT_WAGE),
+
+
+      
+  COMPLETION_EXT_DT = ifelse(COMPLETION_EXT_DT < START_DT, NA, COMPLETION_EXT_DT),
+  COMPLETION_EXT_DT = ifelse(COMPLETION_EXT_DT > as.Date("2025-06-30"), NA, COMPLETION_EXT_DT),
+  COMPLETION_EXT_DT = as.Date(COMPLETION_EXT_DT),
+
+# The Office of Apprenticeship defines successful completion as an apprentice completing their apprenticeship within 1 year of the expected completion date. Treating completion in this way allows OA to define a status for the apprentices who left their apprenticeship but did not have their status updated by their sponsor.   
+    
+  COMPLETION_DEADLINE = case_when(
+    EXPECT_COMPLETE_DT < START_DT ~ as.Date(NA),
+    TRUE ~ as.Date(EXPECT_COMPLETE_DT + years(1))
+),
+
+# From Data Dictionary Addendum. APPRENTICE_STATUS_CODE: Status of the Apprentice, this determines if an apprentice, is Active, Cancelled, New or Completed. CA = Cancelled, CO = Completed, RE = Registered, RI = Reinstated, SU = Suspended, TR = Transferred, RS = Restore Pending, UP = Update Pending/Registered, IC = Interim Completion Pending, RS=Restore Pending. 
+# Given data quality issues, we must be careful. We will treat an apprentice with CO as completed, and an apprentice with CA as cancelled. However, it is possible that a sponsor has not updated this field. Therefore we will also make a determination based on the value of completion date, since the presence of a completion date should be definitive as a completion event. 
+  
+  COMPLETION = case_when(
+    APPR_STATUS_CD == "CO" ~ "Y",
+    APPR_STATUS_CD == "CA" ~ "N",
+    is.na(COMPLETION_DEADLINE) ~ NA,
+    COMPLETION_DEADLINE > as.Date("2025-06-30") ~ NA, 
+    is.na(COMPLETION_EXT_DT) ~ "N",
+    COMPLETION_EXT_DT > COMPLETION_DEADLINE ~ "N",
+    COMPLETION_EXT_DT <= COMPLETION_DEADLINE ~ "Y"
+  ),
+  COMPLETION = as.factor(COMPLETION),
+  
+  MAJOR_GROUP_NAME = as.factor(MAJOR_GROUP_NAME),
+  APPR_STATUS_CD = as.factor(APPR_STATUS_CD), 
+  SEX_CD = as.factor(SEX_CD),
+  ETHNICITY_CD = as.factor(ETHNICITY_CD),
+  EDUCATION_CD = as.factor(EDUCATION_CD),
+  RACE_CD = as.factor(RACE_CD),
+  ASIAN_IND = as.factor(ASIAN_IND),
+  AFRICAAMER_IND = as.factor(AFRICAAMER_IND),
+  NATHAWAI_IND = as.factor(NATHAWAI_IND),
+  NATINDIAN_IND = as.factor(NATINDIAN_IND),
+  W_IND = as.factor(W_IND),
+  OCCUP_TYPE = as.factor(OCCUP_TYPE),
+  
+  AGE_AT_START = ifelse((AGE_AT_START < 14 | AGE_AT_START > 70), NA, AGE_AT_START),
+
+
+  EDUCATION_CD_Rec = ifelse(is.na(EDUCATION_CD), "5", EDUCATION_CD),
+  EDUCATION_CD_Rec = as.factor(EDUCATION_CD_Rec),
+
+  SEX_CD_Rec = ifelse(is.na(SEX_CD), "3", SEX_CD),
+  SEX_CD_Rec = as.factor(SEX_CD_Rec),
+
+  ETHNICITY_CD_Rec = ifelse(is.na(ETHNICITY_CD), "3", ETHNICITY_CD),
+  ETHNICITY_CD_Rec = as.factor(ETHNICITY_CD_Rec),
+     
+  ) %>% 
+
+  relocate(COMPLETION_DEADLINE, .after = COMPLETION_EXT_DT)  %>% 
+  relocate(COMPLETION, .after = COMPLETION_DEADLINE)
+
+  
+glimpse(app)
+
+app = app %>% 
+  mutate(
+    RACE_CD = fct_recode(RACE_CD,
+                          "White" = "1",
+                          "Pacific Islander" = "2",
+                          "Black" = "3",
+                          "Asian" = "4",
+                          "Native American" = "5",
+                          "Not Provided" = "6",
+                          "Multi-Race" = "7"
+    ),
+    EDUCATION_CD_Rec = fct_recode(EDUCATION_CD_Rec,
+                              "Not High School graduate"  = "1",
+                              "9th to 12th grade, no diploma"  = "2",
+                              "GED"  = "3",
+                              "High School graduate (including equivalency)"  = "4",
+                              "Participant Did Not Self-Identify"  = "5",
+                              "Some College or Associate's degree"  = "6",
+                              "Bachelor's degree"  = "7",
+                              "Masters degree"  = "8",
+                              "Doctorate or Prof. degree"  = "9"
+    ),
+    ETHNICITY_CD_Rec = fct_recode(ETHNICITY_CD_Rec,
+                              "Hispanic or Latino"  = "1",
+                              "Non-Hispanic or Latino"  = "2",
+                              "Did Not Self-Identify"  = "3",
+                              "Did Not Self-Identify"  = "9"
+    ),
+    SEX_CD_Rec = fct_recode(SEX_CD_Rec,
+                              "Male"  = "1",
+                              "Female"  = "2",
+                              "Did Not Self-Identify"  = "3",
+                              "Did Not Self-Identify"  = "9"
+    )
+  )  
+
+app = app %>% 
+  mutate(EXP_WEEKS = as.numeric(difftime(EXPECT_COMPLETE_DT, START_DT, units = "weeks")))
+
+glimpse(app)
+```
+
+## Recoding Race Indicators and MAJOR_GROUP_NAME
+
+```{r}
+app_final_reg = app %>% 
+  mutate(
+    ASIAN_dummy = case_when(
+       ASIAN_IND == "1" ~ 1,
+       ASIAN_IND == "0" ~ 0,
+       ASIAN_IND == "2" ~ 9, 
+       ASIAN_IND == "9" ~ 9,
+       is.na(ASIAN_IND) ~ 9,
+       TRUE ~ NA),
+    
+    AFRICAAMER_dummy = case_when(
+       AFRICAAMER_IND == "1" ~ 1,
+       AFRICAAMER_IND == "0" ~ 0,
+       AFRICAAMER_IND == "2" ~ 9, 
+       AFRICAAMER_IND == "9" ~ 9,
+       is.na(AFRICAAMER_IND) ~ 9,
+       TRUE ~ NA),
+
+    NATHAWAI_dummy = case_when(
+       NATHAWAI_IND == "1" ~ 1,
+       NATHAWAI_IND == "0" ~ 0,
+       NATHAWAI_IND == "2" ~ 9, 
+       NATHAWAI_IND == "9" ~ 9,
+       is.na(NATHAWAI_IND) ~ 9,
+       TRUE ~ NA),
+
+    NATINDIAN_dummy = case_when(
+       NATINDIAN_IND == "1" ~ 1,
+       NATINDIAN_IND == "0" ~ 0,
+       NATINDIAN_IND == "2" ~ 9, 
+       NATINDIAN_IND == "9" ~ 9,
+       is.na(NATINDIAN_IND) ~ 9,
+       TRUE ~ NA),
+
+    WHITE_dummy = case_when(
+       W_IND == "1" ~ 1,
+       W_IND == "0" ~ 0,
+       W_IND == "2" ~ 9, 
+       W_IND == "9" ~ 9,
+       is.na(W_IND) ~ 9,
+       TRUE ~ NA),
+    
+    ASIAN_dummy = as.factor(ASIAN_dummy),
+    AFRICAAMER_dummy = as.factor(AFRICAAMER_dummy),
+    NATHAWAI_dummy = as.factor(NATHAWAI_dummy),
+    NATINDIAN_dummy = as.factor(NATINDIAN_dummy),
+    WHITE_dummy = as.factor(WHITE_dummy),
+    
+    ASIAN_dummy = fct_recode(ASIAN_dummy, 
+                             "Asian" = "1",
+                             "Non-Asian" = "0",
+                             "Did Not Self-Identify" = "9"
+    ),
+    AFRICAAMER_dummy = fct_recode(AFRICAAMER_dummy, 
+                                  "African American" = "1",
+                                  "Non-African American" = "0",
+                                  "Did Not Self-Identify" = "9"
+    ),
+    NATHAWAI_dummy = fct_recode(NATHAWAI_dummy, 
+                                "Native Hawaiian or Pacific Islander" = "1",
+                                "Non-Native Hawaiian or Pacific Islander" = "0",
+                                "Did Not Self-Identify" = "9"
+    ),
+    NATINDIAN_dummy = fct_recode(NATINDIAN_dummy, 
+                                 "American Indian or Alaska Native" = "1",
+                                 "Non-American Indian or Alaska Native" = "0",
+                                 "Did Not Self-Identify" = "9"
+    ),
+    WHITE_dummy = fct_recode(WHITE_dummy, 
+                             "White" = "1",
+                             "Non-White" = "0",
+                             "Did Not Self-Identify" = "9"
+    ),
+    MAJOR_GROUP_NAME = fct_recode(MAJOR_GROUP_NAME,
+                                  "STEM and Technical Professions" = "Architecture and Engineering Occupations",
+                                  "STEM and Technical Professions" = "Computer and Mathematical Occupations",
+                                  "STEM and Technical Professions" = "Life, Physical, and Social Science Occupations",
+                                  
+                                  "Trades and Manual Labor" = "Construction and Extraction Occupations",
+                                  "Trades and Manual Labor" = "Installation, Maintenance, and Repair Occupations",
+                                  "Trades and Manual Labor" = "Production Occupations",
+                                  "Trades and Manual Labor" = "Transportation and Material Moving Occupations",
+                                  "Trades and Manual Labor" = "Farming, Fishing, and Forestry Occupations",
+                                  
+                                  "Healthcare and Social Services" = "Healthcare Practitioners and Technical Occupations",
+                                  "Healthcare and Social Services" = "Healthcare Support Occupations",
+                                  "Healthcare and Social Services" = "Community and Social Service Occupations",
+                                  "Healthcare and Social Services" = "Personal Care and Service Occupations",
+                                  
+                                  "Education and Public Services" = "Educational Instruction and Library Occupations",
+                                  "Education and Public Services" = "Protective Service Occupations",
+                                  "Education and Public Services" = "Military Specific Occupations",
+                                  
+                                  "Business, Management and Office Support" = "Management Occupations",
+                                  "Business, Management and Office Support" = "Business and Financial Operations Occupations",
+                                  "Business, Management and Office Support" = "Office and Administrative Support Occupations",
+                                  
+                                  "Arts, Hospitality and Sales" = "Arts, Design, Entertainment, Sports, and Media Occupations",
+                                  "Arts, Hospitality and Sales" = "Food Preparation and Serving Related Occupations",
+                                  "Arts, Hospitality and Sales" = "Sales and Related Occupations",
+                                  "Arts, Hospitality and Sales" = "Building and Grounds Cleaning and Maintenance Occupations"
+    )
+      )
+
+
+# Suggestive Re-coding of MAJOR_GROUP_NAME into 6 broader categories below:
+# 1. STEM & Technical Professions: grouped occupations centered around science, technology, engineering, and mathematics.
+# 2. Trades & Manual Labor: grouped occupations around hands-on, skilled labor and physical work.
+# 3. Healthcare & Social Services: grouped roles focused on health, wellness, and social support.
+# 4. Education & Public Services: grouped jobs related to education, public safety, and government services.
+# 5. Business, Management & Office Support: grouped administrative, financial, and managerial roles.
+# 6. Arts, Hospitality & Sales: grouped creative, customer-facing, and service-oriented roles.
+
+
+app_final_reg = app_final_reg %>% 
+  select(
+    MAJOR_GROUP_NAME,
+    STARTING_WAGE   ,
+    EXIT_WAGE       ,  
+    COMPLETION      ,
+    AGE_AT_START    ,
+    OCCUP_TYPE      ,
+    EDUCATION_CD_Rec,
+    SEX_CD_Rec      ,
+    ETHNICITY_CD_Rec,
+    ASIAN_dummy     ,
+    AFRICAAMER_dummy,
+    NATHAWAI_dummy  ,
+    NATINDIAN_dummy ,
+    WHITE_dummy,
+    RACE_CD,
+    EXP_WEEKS
+      )
+
+clean_data_wage <- na.omit(app_final_reg)
+#glimpse(clean_data_wage)
+
+clean_data_wage %>% 
+  select(MAJOR_GROUP_NAME) %>% 
+  unique()
+```
+
+# Data Exploration 
+
+## Qualitative Predictors
+
+### Examine Qualitative Predictors
+
+```{r}
+glimpse(app_final_reg %>% 
+  select(where(is.factor) | where(is.character)))
+```
+
+### Determine Number of Levels for Predictors
+
+```{r}
+app_final_reg %>%
+  select(where(is.factor), where(is.character)) %>%
+  sapply(nlevels)
+```
+### Qualitative Predictor Analysis
+
+#### MAJOR_GROUP_NAME
+
+##### Distribution
+
+```{r}
+app_final_reg %>%
+  count(MAJOR_GROUP_NAME) %>%
+  ggplot(aes(x = reorder(MAJOR_GROUP_NAME, n), y = n)) +
+  geom_col(fill = "maroon") +
+  coord_flip() +
+  labs(x = "Occupational Groups", y = "Count", title = "Distribution of Major Occupational Groups")
+```
+
+##### Relationship with Target Variables
+
+```{r}
+table(app_final_reg$MAJOR_GROUP_NAME, app_final_reg$COMPLETION)
+prop.table(table(app_final_reg$MAJOR_GROUP_NAME, app_final_reg$COMPLETION), margin = 1)
+```
+
+```{r}
+library(ggplot2)
+ggplot(app_final_reg, aes(x = MAJOR_GROUP_NAME, fill = COMPLETION)) +
+  geom_bar(position = "fill") +
+  labs(y = "Proportion Completed") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+```
+##### Association Tests
+
+```{r}
+# Cramer's V Test
+vcd::assocstats(table(app_final_reg$MAJOR_GROUP_NAME, app_final_reg$COMPLETION))
+
+# Chi-square Test
+chisq.test(table(app_final_reg$MAJOR_GROUP_NAME, app_final_reg$COMPLETION))
+```
+
+:::{.callout-note}
+## Occupational Group Distribution
+The data suggests that Occupational group has a relationship with Completion status, with significant differences between factor levels. While the Cramer's V score is fairly low, the chi-square test has a very low p-value, indicating that the null hypothesis (that the two variables are independent) is unlikely. The large number of NA values present difficulties.
+:::
+
+#### COMPLETION
+
+```{r}
+app_final_reg %>%
+  count(COMPLETION) %>%
+  ggplot(aes(x = reorder(COMPLETION, n), y = n)) +
+  geom_col(fill = "maroon") +
+  coord_flip() +
+  labs(x = "Completion Status", y = "Count", title = "Distribution of Completion")
+```
+
+```{r}
+count(app_final_reg, COMPLETION)
+sum(app_final_reg$COMPLETION == "Y", na.rm = TRUE) / nrow(app_final_reg)
+```
+
+
+:::{.callout-note}
+## Completion Distribution
+The dataset is broadly split between apprentices who did and did not complete. There is a relatively low number of NAs, and many of these are meaningful (i.e. apprentices who are not expected to have completed yet.)
+:::
+
+#### SEX_CD
+
+```{r}
+app_final_reg %>%
+  count(SEX_CD_Rec) %>%
+  ggplot(aes(x = reorder(SEX_CD_Rec, n), y = n)) +
+  geom_col(fill = "maroon") +
+  coord_flip() +
+  labs(x = "Sex Code", y = "Count", title = "Distribution by Sex")
+```
+```{r}
+count(app_final_reg, SEX_CD_Rec)
+sum(app_final_reg$SEX_CD_Rec == "Male", na.rm = TRUE) / nrow(app_final_reg)
+```
+
+
+:::{.callout-note}
+## Sex Distribution
+The dataset is strongly skewed towards male participants. This may impact the results in some methods, particularly tree-based methods. These methods can disregard a variable if it doesn't have a strong overall influence on the dependent variable prediction. This can happen when the data is skewed, even when there is a significant difference between the classification outcomes between the variables.  
+:::
+
+#### ETHNICITY_CD
+
+```{r}
+app_final_reg %>%
+  count(ETHNICITY_CD_Rec) %>%
+  ggplot(aes(x = reorder(ETHNICITY_CD_Rec, n), y = n)) +
+  geom_col(fill = "maroon") +
+  coord_flip() +
+  labs(x = "Ethnicity Code", y = "Count", title = "Distribution by Ethnicity")
+```
+
+#### EDUCATION_CD
+
+```{r}
+app_final_reg %>%
+  count(EDUCATION_CD_Rec) %>%
+  ggplot(aes(x = reorder(EDUCATION_CD_Rec, n), y = n)) +
+  geom_col(fill = "maroon") +
+  coord_flip() +
+  labs(x = "Education Code", y = "Count", title = "Distribution by Education")
+```
+
+```{r}
+count(app_final_reg, EDUCATION_CD_Rec)
+nrow(app_final_reg)
+```
+
+
+:::{.callout-note}
+## Education Distribution
+The data here is unbalanced, which should be considered when Education is included as a predictor. 
+:::
+
+#### OCCUP_TYPE
+
+```{r}
+app_final_reg %>%
+  count(OCCUP_TYPE) %>%
+  ggplot(aes(x = reorder(OCCUP_TYPE, n), y = n)) +
+  geom_col(fill = "maroon") +
+  coord_flip() +
+  labs(
+    x = "Training Model Code",
+    y = "Count",
+    title = "Distribution by Training Model"
+  )
+```
+
+```{r}
+count(app_final_reg, OCCUP_TYPE)
+```
+
+
+:::{.callout-note}
+## Training Model Distribution
+The Training Model code is dominated by NAs. Furthermore, Time-Based training models vastly outweigh Time-based and Hybrid. It may not be advisable to use this code as a predictor. However, some methods, such as random forest, manage NA values well, so we can explore whether to include it. 
+:::
+
+# Analysis
+
+## Regression
+
+### Multiple Linear Regression
+
+```{r}
+mlr_wage <- lm(EXIT_WAGE ~ STARTING_WAGE + COMPLETION + AGE_AT_START + SEX_CD_Rec +
+               ETHNICITY_CD_Rec + ASIAN_dummy + AFRICAAMER_dummy + NATHAWAI_dummy + 
+               NATINDIAN_dummy + WHITE_dummy + EDUCATION_CD_Rec + OCCUP_TYPE + MAJOR_GROUP_NAME, 
+               clean_data_wage)
+
+x_matrix <- model.matrix(mlr_wage)[, -1]
+dim(x_matrix)
+
+summary(mlr_wage)
+```
+
+#### Model Fit: Regression Diagnostics
+
+* address outliers.
+
+
+```{r}
+plot(mlr_wage)
+```
+
+
+#### VIF
+
+```{r}
+library(carData)
+library(car)
+vif(mlr_wage)
+``` 
+
+```{r}
+#names(summary(mlr_wage))
+summary(mlr_wage)$adj.r.squared
+```
+```{r}
+wage_predicted_full = predict(mlr_wage, clean_data_wage)
+mean((clean_data_wage$EXIT_WAGE - wage_predicted_full)^2)
+```
+
+
+### Cross Validation
+
+#### Validation set with 50% split
+
+```{r}
+n <- nrow(clean_data_wage)
+set.seed(12345)
+Z <- sample(n, size = n / 2)
+reg_train <- clean_data_wage[Z,]
+reg_test <- clean_data_wage[-Z,]
+
+mlr_wage_vs <- lm(EXIT_WAGE ~ STARTING_WAGE + COMPLETION + AGE_AT_START + SEX_CD_Rec +
+                  ETHNICITY_CD_Rec + ASIAN_dummy + AFRICAAMER_dummy + NATHAWAI_dummy + 
+                  NATINDIAN_dummy + WHITE_dummy + EDUCATION_CD_Rec + OCCUP_TYPE + MAJOR_GROUP_NAME,
+                  reg_train)
+summary(mlr_wage_vs)
+
+wage_predicted = predict(mlr_wage_vs, reg_test)
+
+mean((reg_test$EXIT_WAGE - wage_predicted)^2)
+```
+
+```{r}
+wage_test <- data.frame(reg_test, wage_predicted)
+
+ggplot(wage_test, aes(x = EXIT_WAGE, y = wage_predicted)) + 
+  geom_point() + 
+  geom_abline (colour="red") +
+  theme_bw()
+```
+
+
+
+#### Leave-One-Out Cross-Validation (LOOCV).
+
+I'm not going to run this analysis for this data set at this point because we have a large number of observations and the computer is not being able to handle well. Further discussion may be necessary while talking into consideration other methods.
+
+```{r}
+##| cache: true
+#library(boot)
+#cv_glm_full = cv.glm(clean_data_wage, mlr_wage)
+#cv_glm_full$delta
+```
+
+
+ 
+
+### Variable Selection
+
+```{r}
+library(leaps)
+regsub_wage_full <- regsubsets(EXIT_WAGE ~ ., data = reg_train, nvmax = 13, really.big = T)
+mlr_wage_full_summary <- summary(regsub_wage_full)
+names(mlr_wage_full_summary)
+```
+
+
+#### Best Model based on adjusted R2
+
+```{r}
+min_adjr2 <- which.max(mlr_wage_full_summary$adjr2)
+min_adjr2
+mlr_wage_full_summary$which[min_adjr2,][mlr_wage_full_summary$which[min_adjr2,] == TRUE][-1]
+```
+
+
+#### Best Model based on BIC:
+
+```{r}
+round(mlr_wage_full_summary$bic, 0)
+max_BIC <- which.max(mlr_wage_full_summary$bic) # The worst by BIC
+min_BIC <- which.min(mlr_wage_full_summary$bic) # The best by BIC
+min_BIC
+mlr_wage_full_summary$which[min_BIC,][mlr_wage_full_summary$which[min_BIC,] == TRUE][-1]
+```
+
+
+#### Best Model based on CP
+
+```{r}
+round(mlr_wage_full_summary$cp, 2)
+max_Cp <- which.max(abs(mlr_wage_full_summary$cp - 1:17)) # The worst by Cp - underfit so high bias.
+max_Cp <- which.min(abs(mlr_wage_full_summary$cp - 1:17)) # The best by Cp
+max_Cp
+names(mlr_wage_full_summary$which[max_Cp,][mlr_wage_full_summary$which[max_Cp,] == TRUE])[-1]
+```
+
+
+#### Best Model based on Stepwise Forward Selection
+
+```{r}
+reg_null <- lm(EXIT_WAGE ~ 1, data = reg_train)
+```
+
+
+
+```{r}
+step_forward <- step(reg_null,
+                     scope = list(lower = reg_null, upper = mlr_wage_vs),
+                     direction = "forward", 
+                     trace = 0)
+summary(step_forward)
+```
+
+
+
+```{r}
+step_outb <- step(mlr_wage_vs, 
+                 scope = list(lower = reg_null, upper = mlr_wage_vs),
+                 method = "backward", 
+                 trace = 0)
+summary(step_outb)
+```
+
+```{r}
+AIC(mlr_wage_vs, step_outb, step_forward)
+```
+
+
+
+### Ridge Regression
+
+
+```{r}
+clean_data_wage[, purrr::map_lgl(clean_data_wage, is.numeric)] |> 
+  cor() |> round(2)
+```
+
+
+```{r}
+library(glmnet)
+set.seed(22)
+rr_cv <- cv.glmnet(x_matrix[Z,], y = reg_train$EXIT_WAGE, alpha = 0)
+rr_cv
+```
+
+```{r}
+plot(rr_cv)
+```
+
+```{r}
+coef(rr_cv)
+```
+
+```{r}
+Yhat_ridge <- predict(rr_cv, newx = x_matrix[-Z,], s = "lambda.min")
+mean((reg_test$EXIT_WAGE - Yhat_ridge)^2) |> round(3)
+```
+
+
+### LASSO Regression
+
+```{r}
+set.seed(22)
+lr_cv <- cv.glmnet(x_matrix[Z,], y = reg_train$EXIT_WAGE, alpha = 1)
+lr_cv
+```
+
+```{r}
+coef(lr_cv) 
+```
+
+```{r}
+library(vip)
+vip::vip(lr_cv)
+```
+
+```{r}
+Yhat_lasso <- predict(lr_cv, newx = x_matrix[-Z,], s = "lambda.1se")
+mean((reg_test$EXIT_WAGE - Yhat_lasso)^2) |> round(3)
+```
+
+
+### PCR with K = 10 cross-validation
+
+
+```{r}
+library(pls)
+set.seed(my_seed)
+pcrv_fit <- pcr(EXIT_WAGE ~ STARTING_WAGE + COMPLETION + AGE_AT_START + SEX_CD_Rec +
+                  ETHNICITY_CD_Rec + ASIAN_dummy + AFRICAAMER_dummy + NATHAWAI_dummy + 
+                  NATINDIAN_dummy + WHITE_dummy + OCCUP_TYPE,
+                  data = reg_train, scale = TRUE, validation = "CV", segments = 10)
+summary(pcrv_fit)
+```
+
+```{r}
+vip::vip(pcrv_fit)
+```
+
+```{r}
+opt_M <- which.min(pcrv_fit$validation$PRESS)
+opt_M
+```
+
+```{r}
+pcr_pred <- predict(pcrv_fit, reg_test, ncomp = opt_M)
+test_MSE <- mean((pcr_pred - reg_test$EXIT_WAGE)^2)
+test_MSE
+```
+
+
+### PLS 
+
+
+```{r}
+set.seed(my_seed)
+plsrv_fit <- plsr(EXIT_WAGE ~ STARTING_WAGE + COMPLETION + AGE_AT_START + SEX_CD_Rec +
+                  ETHNICITY_CD_Rec + ASIAN_dummy + AFRICAAMER_dummy + NATHAWAI_dummy + 
+                  NATINDIAN_dummy + WHITE_dummy + OCCUP_TYPE, 
+                  data = reg_train, scale = TRUE, validation = "CV", segments = 10)
+summary(plsrv_fit)
+```
+
+
+```{r}
+vip::vip(plsrv_fit)
+```
+
+
+```{r}
+opt_M <- which.min(plsrv_fit$validation$PRESS)
+opt_M
+```
+```{r}
+plsr_pred <- predict(plsrv_fit, reg_test, ncomp = opt_M)
+test_MSE <- mean((plsr_pred - reg_test$EXIT_WAGE)^2)
+test_MSE
+```
+
+
+
+### Regression Trees
+
+```{r}
+library(tree)
+tree_wage  <- tree(EXIT_WAGE ~ ., data = clean_data_wage)
+tree_wage
+```
+
+
+```{r}
+summary(tree_wage)
+```
+
+
+```{r}
+plot(tree_wage)
+text(tree_wage)
+```
+
+#### Optimal tree based on cross-validation mean squared error
+
+```{r}
+set.seed(my_seed)
+treem_cvm <- cv.tree(tree_wage)
+treem_cvm$dev |> round(0)
+```
+
+```{r}
+plot(treem_cvm)
+```
+
+
+```{r}
+2650660 / (n - 9) # estimated accuracy.
+```
+
+
+
+## Classification
+
+The purpose of this analysis is to determine which factors are most strongly associated with identifying whether an apprentice will complete their apprenticeship. Understanding the factors associated with apprenticeship completion will enable better interventions and workforce planning in order to emphasize apprenticeship completion. The purpose of this analysis is therefore focused on inference, rather than prediction.  
+
+The Office of Apprenticeship (OA) defines successful completion as an apprentice completing their apprenticeship within 1 year of the expected completion date. Treating completion in this way allows OA to define a status for the apprentices who left their apprenticeship but did not have their status updated by their sponsor.  
+
+This analysis will begin by employing tree-based methods to provide immediate insights into which variables are understand 
+
+### Data Set
+
+#### Full Data
+
+```{r}
+app_final_class = tidyr::drop_na(app_final_reg, 
+                                c(MAJOR_GROUP_NAME,
+                                  STARTING_WAGE   ,
+                                  COMPLETION      ,
+                                  AGE_AT_START    ,
+                                  OCCUP_TYPE      ,
+                                  EDUCATION_CD_Rec,
+                                  SEX_CD_Rec      ,
+                                  ETHNICITY_CD_Rec,
+                                  RACE_CD,
+                                  EXP_WEEKS
+                                )) %>% 
+  select(-ASIAN_dummy, -AFRICAAMER_dummy, -NATHAWAI_dummy, -NATINDIAN_dummy, -WHITE_dummy, -EXIT_WAGE)
+```
+
+#### Train Test Split
+
+```{r}
+set.seed(my_seed)
+
+c_Z <- createDataPartition(app_final_class$COMPLETION, 
+                         p = 0.7, list = FALSE)
+
+c_train_data = app_final_class[c_Z, ]
+c_test_data  = app_final_class[-c_Z, ]
+
+table(c_train_data$COMPLETION)
+table(c_test_data$COMPLETION)
+```
+
+#### Classifier Evaluation Function
+
+```{r}
+compute_classification_metrics = function(y_true, y_pred, positive = NULL) {
+  # If user doesn't specify positive class, take the first level of y_true
+  if (is.null(positive)) {
+    positive <- levels(as.factor(y_true))[1]
+  }
+  
+  # Convert to factors with same levels
+  y_true <- factor(y_true)
+  y_pred <- factor(y_pred, levels = levels(y_true))
+  
+  # Confusion matrix components
+  TP <- sum(y_true == positive & y_pred == positive)
+  TN <- sum(y_true != positive & y_pred != positive)
+  FP <- sum(y_true != positive & y_pred == positive)
+  FN <- sum(y_true == positive & y_pred != positive)
+  
+  # Metrics
+  accuracy  <- (TP + TN) / (TP + TN + FP + FN)
+  precision <- ifelse((TP + FP) == 0, NA, TP / (TP + FP))
+  recall    <- ifelse((TP + FN) == 0, NA, TP / (TP + FN))
+  F1        <- ifelse(is.na(precision) | is.na(recall) | 
+                        (precision + recall) == 0,
+                      NA,
+                      2 * precision * recall / (precision + recall))
+  
+  # Return as a list (or data frame if you prefer)
+  return(list(
+    TP = TP, FP = FP, TN = TN, FN = FN,
+    Accuracy  = accuracy,
+    Precision = precision,
+    Recall    = recall,
+    F1        = F1
+  ))
+}
+```
+
+
+### Decision Tree
+
+We will employ a decision tree to generate initial information about variable importance.
+
+#### Establish Initial Model
+
+```{r}
+library(tree)
+c_app_tree_f = tree(COMPLETION ~ ., 
+                  data = c_train_data)
+c_app_tree_f
+summary(c_app_tree_f)
+```
+
+
+
+#### Tree Initial Model
+
+```{r}
+plot(c_app_tree_f)
+text(c_app_tree_f)
+```
+
+#### Tree Tuning
+
+```{r}
+set.seed(my_seed)
+c_app_tree_big = tree(COMPLETION ~ MAJOR_GROUP_NAME + STARTING_WAGE + AGE_AT_START + OCCUP_TYPE + EDUCATION_CD_Rec + SEX_CD_Rec + ETHNICITY_CD_Rec + RACE_CD + EXP_WEEKS, data = app_final_reg, mindev = 0.01, minsize = 10)
+c_app_tree_cv = cv.tree(c_app_tree_big)
+c_app_tree_cv
+min_dev = min(c_app_tree_cv$dev)
+dev_1se = min_dev + sd(c_app_tree_cv$dev)
+good_sizes = c_app_tree_cv$size[c_app_tree_cv$dev <= dev_1se]
+best_simpler_size = min(good_sizes)
+c_app_tree_pruned = prune.tree(c_app_tree_big, best = best_simpler_size)
+c_app_tree_pruned
+summary(c_app_tree_pruned)
+```
+
+#### Tuned Tree Model
+
+```{r}
+plot(c_app_tree_pruned)
+text(c_app_tree_pruned)
+```
+
+:::{.callout-note}
+#### Cross Validation Results
+The cross validation for the tree-based approach demonstrates that the tree has the best performance at 8 nodes. We will use these results.
+:::
+
+#### Performance Evaluation
+
+```{r}
+c_test_pred = predict(c_app_tree_pruned, c_test_data, type = "class")
+table(Predicted = c_test_pred, Actual = c_test_data$COMPLETION)
+```
+
+```{r}
+compute_classification_metrics(c_test_data$COMPLETION, c_test_pred, positive = "Y")
+```
+
+### Logistic Regression
+
+#### Initial Modeling and Evaluation
+
+##### Initial Model
+
+```{r Initial Model}
+c_log_model = glm(COMPLETION ~ .,
+  data = c_train_data, 
+  family = "binomial")
+
+summary(c_log_model)
+```
+
+
+A large number of predictors seem highly significant (with very low p-values). It should be noted that this is a common effect of large datasets. Large datasets allow the model to identify whether predictors have a statistically verifiable effect, even if the practical predictive power of the predictor is small.  
+
+More notable are the predictors with large p-values MAJOR_GROUP_NAMEHealthcare and Social Services = 0.852076, EDUCATION_CD_RecMasters degree  = 0.854229, RACE_CDNative American = 0.310399, RACE_CDMulti-Race = 0.901263 These predictors are not statistically significant in this model. They may be important in reality, but in the context of this model their effect is already accounted for by other predictors. In other words, after accounting for wages, age, occupation, race, ethnicity, and education levels, these specific categories do not independently shift the odds of completion in a statistically detectable way.  
+
+##### Collapse Categories
+
+We received a warning "Warning: glm.fit: fitted probabilities numerically 0 or 1 occurred", which intakes some categories are unstable. We will identify them and remove them.
+
+```{r}
+c_train_data %>%
+  group_by(COMPLETION) %>%
+  summarize(across(where(is.factor), ~n_distinct(.)))
+
+table(c_train_data$MAJOR_GROUP_NAME, c_train_data$COMPLETION)
+table(c_train_data$OCCUP_TYPE, c_train_data$COMPLETION)
+table(c_train_data$ETHNICITY_CD_Rec, c_train_data$COMPLETION)
+table(c_train_data$EDUCATION_CD_Rec, c_train_data$COMPLETION)
+table(c_train_data$RACE_CD, c_train_data$COMPLETION)
+table(c_train_data$SEX_CD_Rec, c_train_data$COMPLETION)
+```
+Education has a number of categories with low counts that are perfectly aligned with a given group. "Did not Self Identify" in Sex is also problematic. We will drop these categories. 
+
+```{r}
+c_train_data_log = c_train_data %>% 
+  filter(
+    !(EDUCATION_CD_Rec %in% c("9th to 12th grade, no diploma",
+                             "Masters degree",
+                             "Bachelor's degree",
+                             "Doctorate or Prof. degree")),
+    SEX_CD_Rec != "Did Not Self-Identify",
+    MAJOR_GROUP_NAME != "Legal Occupations"
+  ) %>% 
+  droplevels() %>% 
+  mutate(
+      across(
+      c(STARTING_WAGE, AGE_AT_START, EXP_WEEKS),
+      scale,
+      .names = "{.col}_z"
+    ))
+
+c_test_data_log = c_test_data %>% 
+  filter(
+    !(EDUCATION_CD_Rec %in% c("9th to 12th grade, no diploma",
+                             "Masters degree",
+                             "Bachelor's degree",
+                             "Doctorate or Prof. degree")),
+    SEX_CD_Rec != "Did Not Self-Identify",
+    MAJOR_GROUP_NAME != "Legal Occupations"
+  ) %>% 
+  droplevels() %>% 
+  mutate(
+      across(
+      c(STARTING_WAGE, AGE_AT_START, EXP_WEEKS),
+      scale,
+      .names = "{.col}_z"
+    ))
+```
+
+##### Revised Model
+
+```{r}
+c_log_model_2 = glm(COMPLETION ~ . -STARTING_WAGE -AGE_AT_START -EXP_WEEKS,
+  data = c_train_data_log, 
+  family = "binomial")
+
+summary(c_log_model_2)
+```
+
+##### AIC Stepwise Evaluation
+
+```{r}
+c_log_step_aic = step(c_log_model_2, direction = "both", trace = FALSE)
+```
+
+
+```{r}
+summary(c_log_step_aic)
+```
+```{r}
+AIC(c_log_model, c_log_step_aic)
+```
+
+The AIC-driven stepwise did not meaningfully reduce AIC while removing 4 predictors.
+
+##### BIC Stepwise Evaluation
+
+```{r}
+c_log_step_bic <- step(c_log_model_2, k = log(nrow(c_train_data_log)))
+```
+
+```{r}
+BIC(c_log_model, c_log_step_bic)
+```
+
+The BIC stepwise approach reduces predictors significantly (from 27 to 19) but does not substantially improve BIC. Since inference is our goal, this is not a meaningful improvement and we will prefer the full model. 
+
+#### Diagnostics
+
+##### VIF
+
+```{r}
+# VIF for all predictors
+c_log_vif =  car::vif(c_log_model_2)
+c_log_vif
+
+# Flag problematic predictors
+c_log_vif[c_log_vif > 5]
+```
+VIF appears to be well under control.  
+
+##### Cook's Distance
+
+```{r}
+c_cook = cooks.distance(c_log_model_2)
+plot(c_cook, type="h", main="Cook's Distance")
+abline(h = 4/length(c_cook), col="red")
+
+which(c_cook > 4/length(c_cook))
+```
+##### Leverage
+
+```{r}
+c_hats <- hatvalues(c_log_model_2)
+plot(c_hats, main="Leverage (Hat Values)")
+abline(h = 2*mean(c_hats), col="red")
+
+which(c_hats > 2*mean(c_hats))
+```
+
+Leverage appears to be equally distributed across the index.
+
+##### Interactions
+
+While some interactions may possibly increase performance, we did not include interactions because in our experimentation they did not increase the interpretability of the model.
+
+##### Performance
+
+```{r}
+probs <- predict(c_log_model_2, c_test_data_log, type = "response")
+c_test_pred_log <- ifelse(probs > 0.5, "Y", "N")
+```
+
+
+```{r}
+table(Predicted = c_test_pred_log, Actual = c_test_data_log$COMPLETION)
+```
+```{r}
+compute_classification_metrics(c_test_data_log$COMPLETION, c_test_pred_log, positive = "Y")
+```
+
+#### Export Logistic Regression Model
+
+```{r}
+library(broom)
+library(dplyr)
+library(writexl)
+
+glm_table <- tidy(c_log_model_2) %>%
+  mutate(
+    OR = exp(estimate),
+    CI_low = exp(estimate - 1.96 * std.error),
+    CI_high = exp(estimate + 1.96 * std.error)
+  )
+
+write_xlsx(glm_table, "glm_model_results.xlsx")
+```
+
+
+### Random Forest
+
+We will use random forest to generate insights about variable importance, the marginal effect of predictors, and interactions. We will first develop the optimal tree.
+
+We will use the randomForestSRC package for Random Forest, as it is robust against NA values, of which there are many. The base RandomForest package does not handle these well. 
+
+#### Data Setup
+
+We do not need to remove categories with low counts or overly pure values like we did for Logistic Regression. However, we will do so in order to compare the models effectively. We will not, however, center the continuous variables.
+
+```{r}
+c_train_data_rf = c_train_data %>% 
+  filter(
+    !(EDUCATION_CD_Rec %in% c("9th to 12th grade, no diploma",
+                             "Masters degree",
+                             "Bachelor's degree",
+                             "Doctorate or Prof. degree")),
+    SEX_CD_Rec != "Did Not Self-Identify",
+    MAJOR_GROUP_NAME != "Legal Occupations"
+  ) %>% 
+  droplevels() %>% 
+  na.omit()
+
+c_test_data_rf = c_test_data %>% 
+  filter(
+    !(EDUCATION_CD_Rec %in% c("9th to 12th grade, no diploma",
+                             "Masters degree",
+                             "Bachelor's degree",
+                             "Doctorate or Prof. degree")),
+    SEX_CD_Rec != "Did Not Self-Identify",
+    MAJOR_GROUP_NAME != "Legal Occupations"
+  ) %>% 
+  droplevels() %>% 
+  na.omit()
+
+```
+
+Now we need to clean the data for Random Forest
+
+```{r}
+c_train_data_rf <- data.frame(lapply(c_train_data_rf, function(col) {
+  if (is.factor(col)) return(factor(col))
+  if (is.character(col)) return(factor(col))
+  if (is.logical(col)) return(factor(col))
+  return(as.numeric(col))
+}))
+
+c_train_data_rf <- c_train_data_rf %>%
+  mutate(across(where(is.factor), droplevels))
+
+c_test_data_rf <- data.frame(lapply(c_test_data_rf, function(col) {
+  if (is.factor(col)) return(factor(col))
+  if (is.character(col)) return(factor(col))
+  if (is.logical(col)) return(factor(col))
+  return(as.numeric(col))
+}))
+
+c_test_data_rf <- c_test_data_rf %>%
+  mutate(across(where(is.factor), droplevels))
+```
+
+
+#### RF Tuning
+
+We will tune our Random Forest in order to give the best results. We will not conduct cross-validation as a separate step, since randomForestSRC uses OOB cross-validation as part of its core workflow. We will tune mtry and nodesize. We will not tune the number of trees, since the dataset is large and 500 trees is a sufficiently robust sample. 
+
+##### mTry
+
+```{r rf_mtry_tuning, eval = FALSE}
+# This cell has been turned off since we achieved the needed result (identifying the best mtry) and the cell itself take ~ an hour to run. 
+
+mtry_grid = 1:13
+oob_err = numeric(length(mtry_grid))
+
+for (i in seq_along(mtry_grid)) {
+  m = mtry_grid[i]
+  set.seed(my_seed)
+  
+  model = rfsrc(COMPLETION ~ ., 
+                 data = c_train_data_rf,
+                 mtry = m,
+                 ntree = 500,
+                 na.action = "na.impute")
+  
+  oob_err[i] = model$err.rate[length(model$err.rate)]
+}
+
+data.frame(mtry = mtry_grid, oob_err)
+```
+
+```{r rf_mtry_plot, eval=FALSE}
+plot(mtry_grid, oob_err, type="b", pch=19)
+```
+
+mtry  oob_err
+1	    0.5928782			
+2	    0.3900885			
+3	    0.3734576			
+4	    0.3673552			
+5	    0.3654775			
+6	    0.3644045			
+7	    0.3619903			
+8	    0.3604480			
+9	    0.3634657			
+10    0.3634657	
+
+```{r rf_mtry_best}
+c_rf_best_mtry = 8
+```
+
+##### Node Size
+
+```{r rf_nodesize_tuning, eval=FALSE}
+# This cell has been set not to evaluate because its results are already known and it is compute-intensive. 
+
+nodes <- c(1, 3, 5, 7, 10, 20)
+oob_nodes <- numeric(length(nodes))
+
+for (i in seq_along(nodes)) {
+  set.seed(my_seed)
+  model = rfsrc(COMPLETION ~ ., 
+                 data = c_train_data_rf,
+                 nodesize = nodes[i],
+                 mtry = c_rf_best_mtry,   # from previous step
+                 ntree = 500,
+                 na.action = "na.impute")
+  oob_nodes[i] = model$err.rate[length(model$err.rate)]
+}
+
+data.frame(nodesize = nodes, oob_err = oob_nodes)
+```
+
+nodesize  oob_err
+1	        0.3604480			
+3	        0.3625268			
+5	        0.3650751			
+7	        0.3690317			
+10	      0.3734576			
+20	      0.3910944	
+
+```{r rf_best_nodes}
+c_rf_bestnode = 1
+```
+
+#### Random Forest Final Model
+
+
+```{r rf_model}
+# randomForestSRC automatically uses OOB cross-validation.
+
+set.seed(my_seed)
+c_rf_cv = rfsrc(
+  COMPLETION ~ .,
+  data = c_train_data_rf,
+  mtry = c_rf_best_mtry,
+  nodesize = c_rf_bestnode,
+  ntree = 500,
+  na.action = "na.impute",
+  importance = TRUE,
+  forest = TRUE               # Need this so the model doesn't drop data for the minimum depth evaluation
+)
+
+print(c_rf_cv)
+```
+
+
+#### Random Forest Results
+
+##### Performance Metrics
+
+```{r}
+c_test_pred_rf <- predict(c_rf_cv, newdata = c_test_data_rf)
+```
+
+```{r}
+compute_classification_metrics(c_test_data_rf$COMPLETION, c_test_pred_rf$class, positive = "Y")
+```
+
+##### Variable Importance
+
+```{r}
+c_rf_cv$importance
+plot(c_rf_cv$importance)
+
+```
+
+##### Mimimum Depth
+
+```{r}
+c_rf_minimum_depth <- max.subtree(c_rf_cv, statistics = TRUE)
+c_rf_minimum_depth
+```
+Predictor	        First Usage	  Second Usage
+EXP_WEEKS	        0.324	        29.584  
+STARTING_WAGE	    0.744	        14.134  
+MAJOR_GROUP_NAME	1.838	        2.046  
+RACE_CD	          3.05	        3.546  
+OCCUP_TYPE	      3.538	        3.672  
+AGE_AT_START	    3.61	        3.62  
+ETHNICITY_CD_Rec 	3.618	        3.626  
+EDUCATION_CD_Rec	4.054	        4.12  
+SEX_CD_Rec	      4.308	        4.322  
+
+Expected Weeks is the predictor that is used first, by a wide margin, with 0.324. Starting Wage is 0.744, indicating that its first usage comes about twice as long after EXP_WEEKS. Both have a much lower Second Usage, indicating that the first split of these variables creates the most purity. MAJOR_GROUP_NAME is the third, but it is significantly lower than the other two. Notably, MAJOR_GROUP_NAME has a first and second usage close to each other, indicating that it is often used in multiple splits in succession. The other predictors all cluster in the same area. 
